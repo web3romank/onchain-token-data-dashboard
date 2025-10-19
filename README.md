@@ -9,6 +9,8 @@ A real-time analytics dashboard that streams token data directly from gmgn.ai. W
 🔄 Ability to overlay multiple graphs for correlation analysis between metrics
 
 ⚡ Fast, dynamic, and built for on-chain researchers and quantitative traders
+<img width="920" height="379" alt="image" src="https://github.com/user-attachments/assets/ed8c428d-39b8-4383-ae7b-09085a44a882" />
+
 
 # Repository contents
 
