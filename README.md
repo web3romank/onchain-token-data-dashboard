@@ -9,6 +9,7 @@ A real-time analytics dashboard that streams token data directly from gmgn.ai. W
 🔄 Ability to overlay multiple graphs for correlation analysis between metrics
 
 ⚡ Fast, dynamic, and built for on-chain researchers and quantitative traders
+
 <img width="920" height="379" alt="image" src="https://github.com/user-attachments/assets/ed8c428d-39b8-4383-ae7b-09085a44a882" />
 
 
@@ -34,9 +35,18 @@ The repository conatains 3 main files:
 
      This will set the server and the authentication key for it, here "my-secret-token"
      
-  2. Run the dashboard. Head to your browser and paste "http://127.0.0.1:8080/graph.html" into the URL bar. If the server was set correctly, the dashboard will open. Press connect on the top of the page. You will see client connected in server's console.
-  3. Find a token on gmgn.ai you want to stream. Pick any token, open the graph and press F12 on your keyboard or open the website's cond manually. Select "Console" on the top, paste logger_browser_console.js script into it and press enter.
-  Now everything is done. You'r ready to see extended info in the dashboard. Just select the token there and you will see the charts appearing.
+  2. Run the dashboard. Head to your browser and paste "http://127.0.0.1:8080/graph.html" into the URL bar. If the server was set correctly, the dashboard will open. Press connect(pic. 2) on the top of the page. You will see client connected in server's console.
+Pic. 2
+
+    <img width="1896" height="902" alt="image" src="https://github.com/user-attachments/assets/19149141-2c22-4046-98b8-823b36316646" />
+
+  4. Find a token on gmgn.ai you want to stream. Pick any token, open the graph and press F12 on your keyboard or open the website's cond manually. Select "Console" on the top, paste logger_browser_console.js script into it and press enter.
+  Now everything is done. You'r ready to see extended info in the dashboard. Just select the token(pic 4.) there and you will see the charts appearing.
+
+Pic. 4
+
+<img width="1919" height="836" alt="image" src="https://github.com/user-attachments/assets/01df6269-8bb6-41f8-842a-a7cc19acbd30" />
+
 
 
 
