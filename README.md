@@ -36,12 +36,18 @@ The repository conatains 3 main files:
      This will set the server and the authentication key for it, here "my-secret-token"
      
   2. Run the dashboard. Head to your browser and paste "http://127.0.0.1:8080/graph.html" into the URL bar. If the server was set correctly, the dashboard will open. Press connect(pic. 2) on the top of the page. You will see client connected in server's console.
+
 Pic. 2
 
     <img width="1896" height="902" alt="image" src="https://github.com/user-attachments/assets/19149141-2c22-4046-98b8-823b36316646" />
 
-  4. Find a token on gmgn.ai you want to stream. Pick any token, open the graph and press F12 on your keyboard or open the website's cond manually. Select "Console" on the top, paste logger_browser_console.js script into it and press enter.
+  4. Find a token on gmgn.ai you want to stream. Pick any token, open the graph and press F12 on your keyboard or open the website's code manually. Select "Console" on the top, paste logger_browser_console.js script into it and press enter(pic. 3).
   Now everything is done. You'r ready to see extended info in the dashboard. Just select the token(pic 4.) there and you will see the charts appearing.
+
+Pic. 3
+
+<img width="1915" height="901" alt="image" src="https://github.com/user-attachments/assets/f85668a8-87e1-4a9f-a54c-e62feb19f57a" />
+
 
 Pic. 4
 
