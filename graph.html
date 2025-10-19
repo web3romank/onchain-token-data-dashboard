@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<title>Tokens live dashboard — history + zoom/pan</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<!-- date-fns adapter -->
+<script src="https://cdn.jsdelivr.net/npm/date-fns@2.30.0/dist/date-fns.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<!-- zoom plugin -->
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+
+<style>
+  body { font-family: Inter, Arial, sans-serif; margin: 12px; background:#0f1720; color:#e6eef8; }
+  .panel { background:#071029; padding:10px; border-radius:8px; box-shadow: 0 6px 18px rgba(0,0,0,.6); }
+  .controls { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
+  select, button, label, input, textarea, pre { font-size:13px; color:#e6eef8; background:#071029; border:1px solid #123; padding:6px; border-radius:6px; }
+  canvas { background: linear-gradient(180deg,#071029,#04101a); border-radius:8px; display:block; width:100%; }
+  .small { font-size:12px; color:#9fb0c8; margin-right:6px; }
+  .debug { display:flex; gap:10px; margin-top:10px; }
+  textarea { width:100%; height:140px; resize:vertical; background:#081526; color:#bfe; border:1px solid #123; padding:8px; }
+  .status { display:inline-block; padding:4px 8px; border-radius:6px; font-weight:600; }
+  .status.connected { background:linear-gradient(90deg,#064E3B,#10B981); color:#021; }
+  .status.disconnected { background:linear-gradient(90deg,#5B21B6,#111827); color:#ddd; }
+  .js-error { background:#3b0f0f; border:1px solid #7a1a1a; color:#ffd6d6; padding:8px; border-radius:6px; max-height:160px; overflow:auto; }
+</style>
+</head>
+<body>
+  <div class="panel controls">
+    <div>
+      <label class="small">WS host:</label>
+      <input id="host" value="127.0.0.1" style="width:120px"/>
+      <label class="small">port:</label>
+      <input id="port" value="8080" style="width:70px"/>
+      <label class="small">token:</label>
+      <input id="token" value="secret-token" style="width:140px"/>
+      <button id="connectBtn" type="button">Connect</button>
+      <span id="statusEl" class="status disconnected" style="margin-left:10px">Disconnected</span>
+    </div>
+
+    <div style="margin-left:20px;">
+      <label class="small">Tokens (auto-add on receive):</label>
+      <select id="tokenSelect" size="4" style="min-width:380px"></select>
+      <div style="margin-top:6px;">
+        <button id="loadCsvBtn" type="button">Load CSV for selected</button>
+        <span id="csvStatus" style="margin-left:8px;color:#9fb0c8;">—</span>
+      </div>
+    </div>
+
+    <div style="margin-left:20px;">
+      <div>
+        <label class="small">Metrics:</label><br/>
+        <label><input type="checkbox" class="metric" data-m="mcap" checked/> mcap</label>
+        <label><input type="checkbox" class="metric" data-m="holders" checked/> holders</label>
+        <label><input type="checkbox" class="metric" data-m="avgCostMcPct" checked/> avgCostMcPct</label>
+        <label><input type="checkbox" class="metric" data-m="top10Percent" checked/> top10%</label>
+        <label><input type="checkbox" class="metric" data-m="top100Percent" checked/> top100%</label>
+      </div>
+      <div style="margin-top:8px;">
+        <label class="small">Points (max):</label>
+        <input id="points" value="900" style="width:70px"/>
+        <button id="clearBtn" type="button">Clear</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" style="padding:12px;">
+    <canvas id="chart" height="420"></canvas>
+  </div>
+
+  <div class="panel debug" style="display:flex;gap:12px;margin-top:12px;">
+    <div style="flex:1;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+        <strong class="small">Debug / Logs</strong>
+        <span class="small">Messages received:</span><span id="msgCount" style="min-width:40px">0</span>
+        <button id="clearDebug" type="button" style="margin-left:6px">Clear</button>
+      </div>
+      <textarea id="rawLog" readonly placeholder="Raw WS messages (latest on top)"></textarea>
+    </div>
+
+    <div style="width:360px;">
+      <div style="margin-bottom:8px">
+        <strong class="small">Last parsed</strong>
+        <pre id="lastParsed">—</pre>
+      </div>
+      <div style="margin-bottom:8px">
+        <strong class="small">CSV files on server</strong>
+        <div id="csvList" style="max-height:180px; overflow:auto; color:#9fb0c8;"></div>
+      </div>
+      <div>
+        <strong class="small">JS ERROR</strong>
+        <div id="jsError" class="js-error">—</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* Chart + WS dashboard — LMB drag fix + clamp right bound */
+(function(){
+  const WINDOW_SEC_DEFAULT = 15 * 60;
+  const MIN_WINDOW_MS = 2000;
+  const DEDUPE_MS = 800;
+
+  function toMs(iso){ return (new Date(iso)).valueOf(); }
+  function fmtTimeMs(ms){
+    const d = new Date(ms);
+    return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
+  }
+
+  // UI refs (ожидаются в DOM как раньше)
+  const hostInput = document.getElementById('host');
+  const portInput = document.getElementById('port');
+  const tokenInput = document.getElementById('token');
+  const connectBtn = document.getElementById('connectBtn');
+  const tokenSelect = document.getElementById('tokenSelect');
+  const loadCsvBtn = document.getElementById('loadCsvBtn');
+  const pointsInput = document.getElementById('points');
+  const rawLog = document.getElementById('rawLog');
+  const lastParsedEl = document.getElementById('lastParsed');
+  const msgCountEl = document.getElementById('msgCount');
+  const csvListEl = document.getElementById('csvList');
+  const csvStatus = document.getElementById('csvStatus');
+  const jsErrorEl = document.getElementById('jsError');
+
+  // buffers / state
+  const buffers = new Map();
+  const loadedCSV = new Set();
+  const lastSeen = new Map();
+  let autoFollow = true;
+  let socket = null;
+  let msgCount = 0;
+  let lastGoodView = { min: null, max: null };
+
+  function ensureBuffer(token){ if (!buffers.has(token)) buffers.set(token, []); return buffers.get(token); }
+
+  function appendToBuffer(token, pt){
+    const buf = ensureBuffer(token);
+    buf.push(pt);
+    const maxPoints = Math.max(60, parseInt(pointsInput.value,10) || 900);
+    if (buf.length > maxPoints) buf.splice(0, buf.length - maxPoints);
+    const cutBefore = Date.now() - WINDOW_SEC_DEFAULT*1000*2;
+    while (buf.length && toMs(buf[0].t) < cutBefore) buf.shift();
+  }
+
+  function mergeHistoricalIntoBuffer(token, hist){
+    if (!Array.isArray(hist) || !hist.length) return;
+    const map = new Map();
+    const combined = (buffers.get(token) || []).concat(hist);
+    combined.forEach(p=>{
+      if (!p || !p.t) return;
+      const iso = new Date(p.t).toISOString();
+      map.set(iso, Object.assign(map.get(iso)||{}, { t: iso,
+        mcap: p.mcap != null ? Number(p.mcap) : (map.get(iso)?.mcap ?? null),
+        holders: p.holders != null ? Number(p.holders) : (map.get(iso)?.holders ?? null),
+        avgCostMcPct: p.avgCostMcPct != null ? Number(p.avgCostMcPct) : (map.get(iso)?.avgCostMcPct ?? null),
+        top10Percent: p.top10Percent != null ? Number(p.top10Percent) : (map.get(iso)?.top10Percent ?? null),
+        top100Percent: p.top100Percent != null ? Number(p.top100Percent) : (map.get(iso)?.top100Percent ?? null)
+      }));
+    });
+    const merged = Array.from(map.values()).sort((a,b)=> toMs(a.t) - toMs(b.t));
+    const maxPoints = Math.max(60, parseInt(pointsInput.value,10) || 900);
+    const cutBefore = Date.now() - WINDOW_SEC_DEFAULT*1000*2;
+    const trimmed = merged.filter(p => toMs(p.t) >= cutBefore).slice(-maxPoints);
+    buffers.set(token, trimmed);
+  }
+
+  // --- Chart init ---
+  const ctx = document.getElementById('chart').getContext('2d');
+  const COLORS = ['#60A5FA','#34D399','#F59E0B','#F97316','#EF4444','#A78BFA','#22C1C3'];
+  function colorByIndex(i){ return COLORS[i % COLORS.length]; }
+
+  const chart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets: [] },
+    options: {
+      animation: false,
+      maintainAspectRatio: false,
+      parsing: false,
+      normalized: true,
+      plugins: {
+        legend: { display: true },
+        zoom: {
+          zoom: {
+            wheel: { enabled: true, speed: 0.12 },
+            pinch: { enabled: true },
+            mode: 'x',
+            onZoomComplete: ({chart}) => { userInteracted(); validateAndFixView(chart); }
+          },
+          pan: {
+            enabled: true,
+            mode: 'x',
+            threshold: 5,
+            onPanComplete: ({chart}) => { userInteracted(); onPanHandler(chart); validateAndFixView(chart); }
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'linear',
+          ticks: { color: '#9fb0c8', callback: function(value){ return fmtTimeMs(Number(value)); } }
+        },
+        y_mcap: { type:'linear', position:'left', ticks:{ color:'#9fb0c8' } },
+        y_holders: { type:'linear', position:'right', grid:{ drawOnChartArea:false }, ticks:{ color:'#9fb0c8' } },
+        y_pct: { type:'linear', position:'right', offset:true, grid:{ drawOnChartArea:false }, ticks:{ color:'#9fb0c8' } }
+      }
+    }
+  });
+
+  function ensureDataset(tokenId, metric, idx){
+    const id = `${tokenId}::${metric}`;
+    let ds = chart.data.datasets.find(d => d._id === id);
+    if (ds) return ds;
+    let yAxis = 'y_pct';
+    if (metric === 'mcap') yAxis = 'y_mcap';
+    if (metric === 'holders') yAxis = 'y_holders';
+    ds = { _id: id, label: `${tokenId} — ${metric}`, data: [], borderColor: colorByIndex(chart.data.datasets.length), backgroundColor: 'transparent', pointRadius: 0, tension: 0.12, borderWidth: idx?2:1.6, yAxisID: yAxis, spanGaps: false };
+    chart.data.datasets.push(ds);
+    return ds;
+  }
+
+  function updateDatasetsFromBuffers(){
+    chart.data.datasets.forEach(d=>d.data.length=0);
+    const selected = Array.from(tokenSelect.selectedOptions).map(o=>o.value);
+    const metrics = Array.from(document.querySelectorAll('.metric:checked')).map(ch=>ch.dataset.m);
+    selected.forEach((tokenId, idx)=>{
+      const buf = buffers.get(tokenId) || [];
+      metrics.forEach(metric=>{
+        const ds = ensureDataset(tokenId, metric, idx);
+        for (let i=0;i<buf.length;i++){
+          const p = buf[i];
+          const v = p[metric];
+          if (v===null || v===undefined || Number.isNaN(Number(v))) continue;
+          ds.data.push({ x: toMs(p.t), y: Number(v) });
+        }
+        ds.data.sort((a,b)=> a.x - b.x);
+      });
+    });
+    chart.update();
+    // save lastGoodView
+    saveLastGoodView();
+  }
+
+  function saveLastGoodView(){
+    try {
+      const sc = chart.scales && chart.scales.x;
+      if (!sc) return;
+      const min = sc.min, max = sc.max;
+      if (isFinite(min) && isFinite(max)) { lastGoodView.min = min; lastGoodView.max = max; }
+    } catch(e){}
+  }
+
+  function validateAndFixView(chartRef){
+    try {
+      const sc = chartRef.scales && chartRef.scales.x;
+      if (!sc) return;
+      let min = sc.min, max = sc.max;
+      if (!isFinite(min) || !isFinite(max) || (max - min) < MIN_WINDOW_MS) {
+        if (lastGoodView.min != null && lastGoodView.max != null) {
+          chartRef.options.scales.x.min = lastGoodView.min;
+          chartRef.options.scales.x.max = lastGoodView.max;
+        } else {
+          let latest = 0;
+          chartRef.data.datasets.forEach(ds => { if(ds.data && ds.data.length) latest = Math.max(latest, ds.data[ds.data.length-1].x); });
+          if (latest) { chartRef.options.scales.x.min = latest - WINDOW_SEC_DEFAULT*1000; chartRef.options.scales.x.max = latest; }
+          else { chartRef.options.scales.x.min = undefined; chartRef.options.scales.x.max = undefined; }
+        }
+        chartRef.update('none');
+      } else {
+        lastGoodView.min = min; lastGoodView.max = max;
+      }
+    } catch(e){ console.warn('validate view', e); }
+  }
+
+  // custom LMB drag (pointer events) — robust pan that clamps right bound
+  (function attachPointerPan(){
+    let dragging = false;
+    let ptrId = null;
+    let startPointerVal = null;
+    let startMin = null, startMax = null;
+
+    chart.canvas.addEventListener('pointerdown', (e) => {
+      // only handle left button
+      if (e.button !== 0) return;
+      // ignore if ctrl/shift/meta etc. used to avoid conflict with plugin zoom shortcuts
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+      // disable plugin pan to avoid conflict while we do manual drag
+      if (chart.options.plugins && chart.options.plugins.zoom && chart.options.plugins.zoom.pan) {
+        chart.options.plugins.zoom.pan.enabled = false;
+      }
+      dragging = true;
+      ptrId = e.pointerId;
+      chart.canvas.setPointerCapture && chart.canvas.setPointerCapture(ptrId);
+      const scale = chart.scales.x;
+      if (!scale) { dragging = false; return; }
+      startPointerVal = scale.getValueForPixel(e.offsetX);
+      startMin = scale.min;
+      startMax = scale.max;
+      userInteracted();
+    });
+
+    chart.canvas.addEventListener('pointermove', (e) => {
+      if (!dragging || e.pointerId !== ptrId) return;
+      const scale = chart.scales.x;
+      if (!scale) return;
+      const curPointerVal = scale.getValueForPixel(e.offsetX);
+      const delta = startPointerVal - curPointerVal; // positive => move view forward in time
+      let newMin = startMin + delta;
+      let newMax = startMax + delta;
+
+      // clamp right so it never goes beyond latest data point
+      // find latest across datasets
+      let latest = 0;
+      chart.data.datasets.forEach(ds => { if(ds.data && ds.data.length) latest = Math.max(latest, ds.data[ds.data.length-1].x); });
+      if (latest > 0 && newMax > latest) {
+        const overshoot = newMax - latest;
+        newMax -= overshoot;
+        newMin -= overshoot;
+      }
+      // avoid too small window
+      if ((newMax - newMin) < MIN_WINDOW_MS) {
+        newMin = newMax - MIN_WINDOW_MS;
+      }
+
+      chart.options.scales.x.min = newMin;
+      chart.options.scales.x.max = newMax;
+      chart.update('none');
+    });
+
+    const endDrag = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      try { chart.canvas.releasePointerCapture && chart.canvas.releasePointerCapture(ptrId); } catch(_) {}
+      ptrId = null;
+      // re-enable plugin pan
+      if (chart.options.plugins && chart.options.plugins.zoom && chart.options.plugins.zoom.pan) {
+        chart.options.plugins.zoom.pan.enabled = true;
+      }
+      saveLastGoodView();
+      userInteracted(); // left-button drag is user interaction -> disable autoFollow
+    };
+
+    chart.canvas.addEventListener('pointerup', endDrag);
+    chart.canvas.addEventListener('pointercancel', endDrag);
+    chart.canvas.addEventListener('pointerleave', (e)=>{ /* don't auto end here to allow capture release on pointerup */ });
+
+  })();
+
+  // ensure that when new data arrives and autoFollow == true we keep view on latest
+  function applyAutoFollowIfNeeded(){
+    if (!autoFollow) return;
+    // find latest
+    let latest = 0;
+    chart.data.datasets.forEach(ds => { if (ds.data && ds.data.length) latest = Math.max(latest, ds.data[ds.data.length-1].x); });
+    if (!latest) return;
+    const winMs = WINDOW_SEC_DEFAULT * 1000;
+    chart.options.scales.x.min = latest - winMs;
+    chart.options.scales.x.max = latest;
+    chart.update('none');
+    saveLastGoodView();
+  }
+
+  // safe push to dataset
+  function safePushPoint(tokenId, metric, isoT, yVal){
+    const dsId = `${tokenId}::${metric}`;
+    const ds = chart.data.datasets.find(d=>d._id===dsId);
+    if (!ds) return;
+    const x = toMs(isoT);
+    const key = `${dsId}::${x}`;
+    const prev = lastSeen.get(key);
+    if (prev && prev.y === yVal && (Date.now() - prev.ts) < DEDUPE_MS) return;
+    ds.data.push({ x, y: Number(yVal) });
+    ds.data.sort((a,b)=> a.x - b.x);
+    lastSeen.set(key, { y: yVal, ts: Date.now() });
+    const max = Math.max(60, parseInt(pointsInput.value,10) || 900);
+    if (ds.data.length > max) ds.data.splice(0, ds.data.length - max);
+  }
+
+  // pan handler to load historical CSV (keeps previous behaviour)
+  let panLoadDebounce = 0;
+  async function onPanHandler(chartRef){
+    try {
+      const sc = chartRef.scales && chartRef.scales.x;
+      if (!sc) return;
+      const visibleMin = Number(sc.min);
+      const selected = Array.from(tokenSelect.selectedOptions).map(o=>o.value);
+      let earliestBuf = Infinity;
+      selected.forEach(tokenId => {
+        const buf = buffers.get(tokenId) || [];
+        if (buf.length) earliestBuf = Math.min(earliestBuf, toMs(buf[0].t));
+      });
+      if (!isFinite(earliestBuf)) return;
+      if (visibleMin < earliestBuf - 2000) {
+        const now = Date.now();
+        if (now - panLoadDebounce < 1500) return;
+        panLoadDebounce = now;
+        csvStatus && (csvStatus.textContent = 'Pan left: loading historical CSV...');
+        for (const tokenId of selected) if (!loadedCSV.has(tokenId)) await loadCsvForToken(tokenId);
+        csvStatus && (csvStatus.textContent = 'Historical loaded');
+        updateDatasetsFromBuffers();
+      }
+    } catch(e){ console.warn('onPanHandler err', e); }
+  }
+
+  // CSV helpers (as before)
+  function baseUrl(){ return `http://${hostInput.value.trim()||'127.0.0.1'}:${Number(portInput.value)||8080}`; }
+  async function fetchCsvList(){ try { const res = await fetch(`${baseUrl()}/csv/list`); const files = await res.json(); csvListEl.innerHTML=''; files.forEach(f=>{ const el=document.createElement('div'); el.textContent=f; el.style.cursor='pointer'; el.onclick=(()=>addTokenOption(f.replace(/\.csv$/i,''))); csvListEl.appendChild(el); }); } catch(e){ csvListEl.textContent='Failed to fetch csv list'; } }
+  function addTokenOption(tokenId){ if (!tokenId) return; if (!Array.from(tokenSelect.options).find(o=>o.value===tokenId)){ const opt=document.createElement('option'); opt.value=tokenId; opt.text=tokenId; tokenSelect.appendChild(opt); } }
+
+  async function loadCsvForToken(tokenId){
+    if (!tokenId) return false;
+    if (loadedCSV.has(tokenId)) { csvStatus && (csvStatus.textContent = `CSV already loaded for ${tokenId}`); return true; }
+    try {
+      csvStatus && (csvStatus.textContent = `Loading ${tokenId}...`);
+      const res = await fetch(`${baseUrl()}/csv/${encodeURIComponent(tokenId)}.csv`);
+      if (!res.ok) throw new Error('CSV fetch failed');
+      const txt = await res.text();
+      const lines = txt.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+      if (lines.length < 2) { csvStatus && (csvStatus.textContent = 'CSV empty'); return false; }
+      const header = lines[0].split(',').map(h=>h.trim()); const idx = {}; header.forEach((h,i)=>idx[h]=i);
+      const hist = [];
+      for (let i=1;i<lines.length;i++){ const cols = lines[i].split(','); const t = cols[idx['time']] || cols[0]; hist.push({ t: new Date(t).toISOString(), mcap: idx['mcap']!==undefined?Number(cols[idx['mcap']]):null, holders: idx['holders']!==undefined?Number(cols[idx['holders']]):null, avgCostMcPct: idx['avgCostMcPct']!==undefined?Number(cols[idx['avgCostMcPct']]):null, top10Percent: idx['top10Percent']!==undefined?Number(cols[idx['top10Percent']]):null, top100Percent: idx['top100Percent']!==undefined?Number(cols[idx['top100Percent']]):null }); }
+      mergeHistoricalIntoBuffer(tokenId, hist);
+      loadedCSV.add(tokenId);
+      csvStatus && (csvStatus.textContent = `Loaded ${tokenId} (${hist.length} rows)`);
+      return true;
+    } catch(e){ csvStatus && (csvStatus.textContent = 'CSV load failed'); return false; }
+  }
+
+  // WebSocket handling (simplified)
+  function prependRaw(text){ if (!rawLog) return; rawLog.value = `[${new Date().toISOString()}] ${text}\n\n` + (rawLog.value||''); if (rawLog.value.length>20000) rawLog.value = rawLog.value.slice(0,20000); }
+  function safeParse(dataStr){ try { return JSON.parse(dataStr); } catch(e){ return dataStr; } }
+
+  function handleParsed(parsed){
+    if (!parsed) return;
+    if (parsed.type === 'broadcast' && parsed.payload) parsed = parsed.payload;
+    lastParsedEl && (lastParsedEl.textContent = JSON.stringify(parsed, null, 2));
+    prependRaw(JSON.stringify(parsed));
+    msgCount++; msgCountEl && (msgCountEl.textContent = String(msgCount));
+    const url = parsed.url || '';
+    const tokenId = (function(u){
+      try { const uu = new URL(u); const parts = uu.pathname.split('/').filter(Boolean); const idx = parts.findIndex(p=>p.toLowerCase()==='token'); if (idx>=0 && parts.length>idx+1) return parts[idx+1]; if (parts.length) return parts[parts.length-1]; return uu.hostname; } catch(e){ const parts = u.split('/').filter(Boolean); return parts.length?parts[parts.length-1]:'unknown'; }
+    })(url);
+    addTokenOption(tokenId);
+    const pt = { t: parsed._receivedAt || parsed.time || new Date().toISOString(), mcap: parsed.mcap != null ? Number(parsed.mcap) : null, holders: parsed.holders != null ? Number(parsed.holders) : null, avgCostMcPct: parsed.avgCostMcPct != null ? Number(parsed.avgCostMcPct) : (parsed.avgCostPct!=null?Number(parsed.avgCostPct):null), top10Percent: parsed.top10Percent != null ? Number(parsed.top10Percent) : (parsed.top10Pct!=null?Number(parsed.top10Pct):null), top100Percent: parsed.top100Percent != null ? Number(parsed.top100Percent) : (parsed.top100Pct!=null?Number(parsed.top100Pct):null) };
+    appendToBuffer(tokenId, pt);
+
+    // если выбран — добавим в chart
+    const selected = Array.from(tokenSelect.selectedOptions).map(o=>o.value);
+    if (selected.includes(tokenId)){
+      const metrics = Array.from(document.querySelectorAll('.metric:checked')).map(ch=>ch.dataset.m);
+      metrics.forEach(metric=>{
+        const v = pt[metric];
+        if (v===null || v===undefined || Number.isNaN(Number(v))) return;
+        safePushPoint(tokenId, metric, pt.t, Number(v));
+      });
+      applyAutoFollowIfNeeded();
+      chart.update();
+    }
+  }
+
+  function setupSocket(){
+    try {
+      if (socket && socket.readyState === WebSocket.OPEN) return;
+      const host = hostInput.value.trim() || '127.0.0.1';
+      const port = Number(portInput.value) || 8080;
+      const token = tokenInput.value.trim() || '';
+      socket = new WebSocket(`ws://${host}:${port}/?token=${encodeURIComponent(token)}`);
+      socket.onopen = ()=> { /* UI set connected if needed */ };
+      socket.onclose = ()=> {};
+      socket.onerror = (e)=> { jsErrorEl && (jsErrorEl.textContent = 'WS err: ' + (e && e.message)); };
+      socket.onmessage = (ev)=> {
+        let data = ev.data;
+        if (data instanceof Blob){
+          const reader = new FileReader();
+          reader.onload = ()=> { try{ handleParsed(safeParse(reader.result)); } catch(e){ console.warn(e); } };
+          reader.readAsText(data);
+        } else {
+          try{ handleParsed(safeParse(typeof data === 'string' ? data : JSON.stringify(data))); } catch(e){ console.warn(e); }
+        }
+      };
+    } catch(e){ jsErrorEl && (jsErrorEl.textContent = 'WS create failed: ' + (e.message||e)); }
+  }
+
+  function stopSocket(){ try { if (socket) socket.close(); socket = null; } catch(e){} }
+
+  function userInteracted(){ autoFollow = false; saveLastGoodView(); }
+  function enableFollow(){ autoFollow = true; applyAutoFollowIfNeeded(); chart.update(); saveLastGoodView(); }
+
+  // UI bindings (basic)
+  connectBtn && connectBtn.addEventListener('click', ()=>{ if (socket && socket.readyState===WebSocket.OPEN) stopSocket(); else setupSocket(); });
+  tokenSelect && tokenSelect.addEventListener('change', ()=> { chart.data.datasets = []; updateDatasetsFromBuffers(); });
+  document.querySelectorAll('.metric').forEach(ch=>ch.addEventListener('change', ()=> { chart.data.datasets = []; updateDatasetsFromBuffers(); }));
+  pointsInput && pointsInput.addEventListener('change', ()=> updateDatasetsFromBuffers());
+  loadCsvBtn && loadCsvBtn.addEventListener('click', async ()=> { const selected = Array.from(tokenSelect.selectedOptions).map(o=>o.value); if (!selected.length){ csvStatus && (csvStatus.textContent='No token selected'); return; } for(const t of selected) await loadCsvForToken(t); updateDatasetsFromBuffers(); });
+
+  // expose for debugging
+  window.__buffers = buffers;
+  window.__chart = chart;
+  window.__loadCsvForToken = loadCsvForToken;
+  window.__fetchCsvList = fetchCsvList;
+  window.__enableFollow = enableFollow;
+
+  // init fetch csv list and populate
+  fetchCsvList();
+  setTimeout(()=>{ updateDatasetsFromBuffers(); saveLastGoodView(); }, 300);
+
+  // autosync new data with follow if enabled
+  function applyAutoFollowIfNeeded(){
+    if (!autoFollow) return;
+    let latest = 0;
+    chart.data.datasets.forEach(ds => { if(ds.data && ds.data.length) latest = Math.max(latest, ds.data[ds.data.length-1].x); });
+    if (!latest) return;
+    const winMs = WINDOW_SEC_DEFAULT * 1000;
+    chart.options.scales.x.min = latest - winMs;
+    chart.options.scales.x.max = latest;
+    chart.update('none');
+    saveLastGoodView();
+  }
+
+})();
+</script>
+</body>
+</html>
