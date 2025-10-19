@@ -42,7 +42,7 @@ Pic. 2
   <img width="1918" height="902" alt="image" src="https://github.com/user-attachments/assets/06db98ca-0c68-46b7-bbc5-0568b7b939ea" />
 
 
-    3. Find a token on gmgn.ai you want to stream. Pick any token, open the graph and press F12 on your keyboard or open the website's code manually. Select "Console" on the top, paste logger_browser_console.js script into it and press enter(pic. 3).
+  3. Find a token on gmgn.ai you want to stream. Pick any token, open the graph and press F12 on your keyboard or open the website's code manually. Select "Console" on the top, paste logger_browser_console.js script into it and press enter(pic. 3).
   Now everything is done. You're ready to see extended info in the dashboard. Just select the token(pic 4.) there and you will see the charts appearing.
 
 Pic. 3
